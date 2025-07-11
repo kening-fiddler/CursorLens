@@ -71,7 +71,7 @@ export default function Home() {
         setLogs(logsData as unknown as Log[]); // Type assertion
         setStats(statsData);
         setAIConfigurations(configData as AIConfiguration[]); // Type assertion
-        const defaultConfig = configData.find((config) => config.isDefault);
+        const defaultConfig = configData?.find((config) => config.isDefault);
         setSelectedConfig(defaultConfig ? defaultConfig.name : "");
 
         setLoading(false);

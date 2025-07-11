@@ -17,6 +17,15 @@
   "prisma": {
     "seed": "tsx prisma/seed.ts"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma",
+      "sqlite3"
+    ]
+  },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^0.0.17",
     "@ai-sdk/anthropic": "^0.0.46",

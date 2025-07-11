@@ -42,16 +42,16 @@ const LogsListComponent: React.FC<LogsListProps> = ({
   return (
     <div className="space-y-4">
       {logs.map((log) => {
-        const totalTokens = log.metadata.totalTokens || 0;
-        const totalCost = log.metadata.totalCost || 0;
+        const totalTokens = log.metadata?.totalTokens || 0;
+        const totalCost = log.metadata?.totalCost || 0;
         const firstUserMessage =
-          log.body.messages.find((m) => m.role === "user" && !("name" in m))
+          log.body?.messages?.find((m) => m.role === "user" && !("name" in m))
             ?.content || "No message available";
         const truncatedMessage =
           firstUserMessage.slice(0, 100) +
           (firstUserMessage.length > 100 ? "..." : "");
         const isSelected = selectedLogId === log.id;
-        const providerColorClass = getProviderColor(log.metadata.provider);
+        const providerColorClass = getProviderColor(log.metadata?.provider || "other");
 
         return (
           <Card
@@ -73,12 +73,12 @@ const LogsListComponent: React.FC<LogsListProps> = ({
                 <div className="flex items-center space-x-2">
                   <Badge
                     variant="outline"
-                    className={getProviderColor(log.metadata.provider)}
+                    className={getProviderColor(log.metadata?.provider || "other")}
                   >
-                    {log.metadata.provider}
+                    {log.metadata?.provider || "unknown"}
                   </Badge>
                   <span className="text-sm font-medium">
-                    {log.metadata.model}
+                    {log.metadata?.model || "unknown"}
                   </span>
                 </div>
               </div>

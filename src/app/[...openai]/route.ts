@@ -18,6 +18,33 @@ const openaiClient = new OpenAI({
 // Allow streaming responses up to 30 seconds
 export const maxDuration = 30;
 
+function transformCursorMessages(messages: any[]): any[] {
+  return messages.map((message) => {
+    // Handle tool role messages from Cursor
+    if (message.role === "tool") {
+      // Transform tool messages to assistant messages with tool results
+      return {
+        role: "assistant",
+        content: message.content || "",
+        tool_call_id: message.tool_call_id,
+        name: message.name,
+      };
+    }
+    
+    // Handle assistant messages with tool_calls
+    if (message.role === "assistant" && message.tool_calls) {
+      return {
+        role: "assistant",
+        content: message.content || "",
+        tool_calls: message.tool_calls,
+      };
+    }
+    
+    // Pass through other messages as-is
+    return message;
+  });
+}
+
 async function getAIModelClient(provider: string, model: string) {
   switch (provider.toLowerCase()) {
     case "openai":
@@ -66,11 +93,18 @@ export async function POST(
   { params }: { params: { openai: string[] } },
 ) {
   const endpoint = params.openai.join("/");
+  console.log("POST request received:", {
+    endpoint,
+    url: request.url,
+    headers: Object.fromEntries(request.headers),
+  });
+
   if (endpoint !== "chat/completions" && endpoint !== "v1/chat/completions") {
     return NextResponse.json({ error: "Not found", endpoint }, { status: 404 });
   }
 
   const body = await request.json();
+  console.log("Request body:", JSON.stringify(body, null, 2));
   const { messages, model: cursorModel, stream = false, ...otherParams } = body;
 
   try {
@@ -96,7 +130,8 @@ export async function POST(
 
     const aiModel = await getAIModelClient(provider, model);
 
-    let modifiedMessages = messages;
+    // Transform Cursor messages to AI SDK format
+    let modifiedMessages = transformCursorMessages(messages);
 
     if (provider.toLowerCase() === "anthropiccached") {
       const hasPotentialContext = messages.some(
@@ -237,6 +272,9 @@ export async function POST(
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, ngrok-skip-browser-warning",
         },
       });
     }
@@ -267,7 +305,13 @@ export async function POST(
     };
     await insertLog(logEntry);
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, ngrok-skip-browser-warning",
+      },
+    });
   } catch (error) {
     console.error("Error in chat completion:", error);
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -293,28 +337,48 @@ export async function GET(
   { params }: { params: { openai: string[] } },
 ) {
   const endpoint = params.openai.join("/");
+  console.log("GET request received:", {
+    endpoint,
+    url: request.url,
+    headers: Object.fromEntries(request.headers),
+  });
 
-  // Existing 'models' endpoint
-  if (endpoint === "models") {
+  // Handle both 'models' and 'v1/models' endpoints
+  if (endpoint === "models" || endpoint === "v1/models") {
     const logEntry = {
       method: "GET",
-      url: "/api/v1/models",
+      url: `/api/${endpoint}`,
       headers: Object.fromEntries(request.headers),
       body: {},
       response: {},
       timestamp: new Date(),
+      metadata: {}, // Add empty metadata object to satisfy Prisma schema
     };
 
     try {
       const models = await openaiClient.models.list();
       logEntry.response = models;
       await insertLog(logEntry);
-      return NextResponse.json(models);
+      return NextResponse.json(models, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, ngrok-skip-browser-warning",
+        },
+      });
     } catch (error) {
       console.error("Error fetching models:", error);
       logEntry.response = { error: String(error) };
+      logEntry.metadata = { error: String(error) }; // Add error to metadata
       await insertLog(logEntry);
-      return NextResponse.json({ error: String(error) }, { status: 500 });
+      return NextResponse.json({ error: String(error) }, { 
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, ngrok-skip-browser-warning",
+        },
+      });
     }
   }
 
@@ -333,7 +397,9 @@ export async function GET(
     return testGroq();
   }
 
-  return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // Log any unmatched endpoints
+  console.log("Unmatched GET endpoint:", endpoint);
+  return NextResponse.json({ error: "Not found", endpoint }, { status: 404 });
 }
 
 async function testOpenAI() {
@@ -435,4 +501,27 @@ async function testGroq() {
     console.error("Error testing Groq:", error);
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }
+}
+
+// Handle OPTIONS requests for CORS
+export async function OPTIONS(
+  request: NextRequest,
+  { params }: { params: { openai: string[] } },
+) {
+  const endpoint = params.openai.join("/");
+  console.log("OPTIONS request received:", {
+    endpoint,
+    url: request.url,
+    headers: Object.fromEntries(request.headers),
+  });
+
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, ngrok-skip-browser-warning",
+      "Access-Control-Max-Age": "86400",
+    },
+  });
 }

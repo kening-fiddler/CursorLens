@@ -2,7 +2,7 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache libc6-compat
+RUN apk add --no-cache libc6-compat openssl
 RUN apk update
 
 # Install pnpm
