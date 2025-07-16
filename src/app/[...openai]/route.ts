@@ -105,7 +105,7 @@ export async function POST(
 
   const body = await request.json();
   console.log("Request body:", JSON.stringify(body, null, 2));
-  const { messages, model: cursorModel, stream = false, ...otherParams } = body;
+  const { messages, model: cursorModel, stream = false, tools, ...otherParams } = body;
 
   try {
     const defaultConfig = await getDefaultConfiguration();
@@ -168,6 +168,8 @@ export async function POST(
       )
         ? 8192
         : undefined,
+      // Pass tools if they exist
+      ...(tools && { tools }),
       // Add other parameters from defaultConfig if needed
     };
 
@@ -220,6 +222,9 @@ export async function POST(
           const outputCost =
             (outputTokens / 1000000) * modelCost.outputTokenCost;
           const totalCost = inputCost + outputCost;
+
+          console.log('Streaming onFinish - toolCalls:', toolCalls);
+          console.log('Streaming onFinish - toolResults:', toolResults);
 
           logEntry.response = {
             text,
@@ -281,8 +286,12 @@ export async function POST(
     // For non-streaming requests, use the AI SDK
     const result = await generateText({
       model: aiModel,
-      messages,
+      messages: modifiedMessages, // Use modifiedMessages instead of messages
+      ...(tools && { tools }), // Pass tools if they exist
     });
+
+    console.log('Non-streaming result - toolCalls:', result.toolCalls);
+    console.log('Non-streaming result - toolResults:', result.toolResults);
 
     const inputTokens = result.usage?.promptTokens ?? 0;
     const outputTokens = result.usage?.completionTokens ?? 0;
