@@ -19,61 +19,172 @@ const openaiClient = new OpenAI({
 export const maxDuration = 30;
 
 function transformCursorMessages(messages: any[]): any[] {
+  if (!Array.isArray(messages)) {
+    console.warn('Messages is not an array, returning empty array');
+    return [];
+  }
+  
   return messages.map((message) => {
+    if (!message || typeof message !== 'object') {
+      console.warn('Invalid message object, skipping:', message);
+      return null;
+    }
+    
     // Handle tool role messages from Cursor
     if (message.role === "tool") {
       // Transform tool messages to assistant messages with tool results
+      // For Anthropic, we should not include tool_call_id or name in the main message
       return {
         role: "assistant",
-        content: message.content || "",
-        tool_call_id: message.tool_call_id,
-        name: message.name,
+        content: `Tool response (${message.name || 'unknown'}): ${message.content || ""}`,
       };
+    }
+    
+    // Handle complex content arrays (e.g., from Claude's thinking feature)
+    let transformedContent = message.content;
+    if (Array.isArray(message.content)) {
+      // Extract text content from content arrays, filtering out thinking and other unsupported types
+      const textParts = message.content
+        .filter((item: any) => item.type === "text" || item.type === "tool_result")
+        .map((item: any) => {
+          if (item.type === "text") {
+            return item.text;
+          } else if (item.type === "tool_result") {
+            // Handle nested content in tool_result
+            const toolContent = Array.isArray(item.content)
+              ? item.content.map((c: any) => c.text || '').join('\n')
+              : item.content;
+            return `Tool result (${item.tool_use_id || 'unknown'}): ${toolContent}`;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n\n');
+      
+      // If we have tool_use items, we might need to handle them differently
+      const toolUses = message.content.filter((item: any) => item.type === "tool_use");
+      if (toolUses.length > 0 && message.role === "assistant") {
+        // This is an assistant message with tool calls
+        return {
+          role: "assistant",
+          content: textParts || "",
+          // Note: We're not passing tool_calls for now as they need special formatting
+        };
+      }
+      
+      transformedContent = textParts || "";
     }
     
     // Handle assistant messages with tool_calls
     if (message.role === "assistant" && message.tool_calls) {
       return {
         role: "assistant",
-        content: message.content || "",
+        content: transformedContent || "",
+        // Note: tool_calls might need different handling for Anthropic
         tool_calls: message.tool_calls,
       };
     }
     
-    // Pass through other messages as-is
-    return message;
-  });
+    // Ensure only valid roles are passed
+    const validRoles = ["system", "user", "assistant"];
+    if (!validRoles.includes(message.role)) {
+      console.warn(`Invalid role "${message.role}", defaulting to "user"`);
+      return {
+        role: "user",
+        content: transformedContent || "",
+      };
+    }
+    
+    // Pass through other messages as-is, but ensure they have required fields
+    return {
+      role: message.role,
+      content: transformedContent || "",
+      ...(message.name && message.role === "system" && { name: message.name }),
+    };
+  }).filter(Boolean); // Remove any null entries
+}
+
+function transformTools(openaiTools: any[]): Record<string, any> | undefined {
+  if (!Array.isArray(openaiTools) || openaiTools.length === 0) {
+    return undefined;
+  }
+  
+  try {
+    const transformedTools: Record<string, any> = {};
+    
+    for (const tool of openaiTools) {
+      if (tool?.type === "function" && tool?.function?.name) {
+        // Create a proper CoreTool structure for AI SDK
+        transformedTools[tool.function.name] = {
+          description: tool.function.description || "",
+          parameters: {
+            type: "object",
+            properties: tool.function.parameters?.properties || {},
+            required: tool.function.parameters?.required || [],
+            ...tool.function.parameters
+          },
+        };
+      }
+    }
+    
+    return Object.keys(transformedTools).length > 0 ? transformedTools : undefined;
+  } catch (error) {
+    console.error("Error transforming tools:", error);
+    return undefined;
+  }
 }
 
 async function getAIModelClient(provider: string, model: string) {
+  if (!provider || !model) {
+    throw new Error("Provider and model are required");
+  }
+
   switch (provider.toLowerCase()) {
     case "openai":
+      if (!env.OPENAI_API_KEY) {
+        throw new Error("OpenAI API key is not configured");
+      }
       return openai(model);
     case "anthropic": {
+      if (!env.ANTHROPIC_API_KEY) {
+        throw new Error("Anthropic API key is not configured");
+      }
       const anthropicClient = createAnthropic({
         apiKey: env.ANTHROPIC_API_KEY,
       });
       return anthropicClient(model);
     }
     case "anthropiccached": {
+      if (!env.ANTHROPIC_API_KEY) {
+        throw new Error("Anthropic API key is not configured");
+      }
       const anthropicClient = createAnthropic({
         apiKey: env.ANTHROPIC_API_KEY,
       });
       return anthropicClient(model, { cacheControl: true });
     }
     case "cohere": {
+      if (!env.COHERE_API_KEY) {
+        throw new Error("Cohere API key is not configured");
+      }
       const cohereClient = createCohere({
         apiKey: env.COHERE_API_KEY,
       });
       return cohereClient(model);
     }
     case "mistral": {
+      if (!env.MISTRAL_API_KEY) {
+        throw new Error("Mistral API key is not configured");
+      }
       const mistralClient = createMistral({
         apiKey: env.MISTRAL_API_KEY,
       });
       return mistralClient(model);
     }
     case "groq": {
+      if (!env.GROQ_API_KEY) {
+        throw new Error("Groq API key is not configured");
+      }
       const groqClient = createOpenAI({
         apiKey: env.GROQ_API_KEY,
       });
@@ -92,6 +203,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { openai: string[] } },
 ) {
+  const startTime = Date.now(); // Track conversation start time
   const endpoint = params.openai.join("/");
   console.log("POST request received:", {
     endpoint,
@@ -124,21 +236,43 @@ export async function POST(
       presencePenalty,
     } = defaultConfig;
 
-    if (!provider) {
+    if (!provider || typeof provider !== 'string') {
       throw new Error("Provider is not defined in the default configuration");
+    }
+
+    if (!model || typeof model !== 'string') {
+      throw new Error("Model is not defined in the default configuration");
     }
 
     const aiModel = await getAIModelClient(provider, model);
 
+    // Validate and transform messages
+    if (!messages || !Array.isArray(messages)) {
+      throw new Error("Invalid messages format");
+    }
+
     // Transform Cursor messages to AI SDK format
+    console.log("Original messages:", JSON.stringify(messages, null, 2));
     let modifiedMessages = transformCursorMessages(messages);
+    console.log("Transformed messages:", JSON.stringify(modifiedMessages, null, 2));
+    console.log("Provider:", provider, "Model:", model);
+    
+    if (modifiedMessages.length === 0) {
+      throw new Error("No valid messages found after transformation");
+    }
+
+    // Transform tools from OpenAI array format to AI SDK Record format
+    console.log("Tools parameter received:", tools);
+    
+    // Temporarily disable tools for GPT models to debug the core issue
+    const validatedTools = provider.toLowerCase() === "openai" ? undefined : transformTools(tools);
 
     if (provider.toLowerCase() === "anthropiccached") {
-      const hasPotentialContext = messages.some(
+      const hasPotentialContext = modifiedMessages.some(
         (message: any) => message.name === "potential_context",
       );
 
-      modifiedMessages = messages.map((message: any) => {
+      modifiedMessages = modifiedMessages.map((message: any) => {
         if (message.name === "potential_context") {
           return {
             ...message,
@@ -168,9 +302,7 @@ export async function POST(
       )
         ? 8192
         : undefined,
-      // Pass tools if they exist
-      ...(tools && { tools }),
-      // Add other parameters from defaultConfig if needed
+      ...(validatedTools && { tools: validatedTools }),
     };
 
     const logEntry = {
@@ -286,8 +418,8 @@ export async function POST(
     // For non-streaming requests, use the AI SDK
     const result = await generateText({
       model: aiModel,
-      messages: modifiedMessages, // Use modifiedMessages instead of messages
-      ...(tools && { tools }), // Pass tools if they exist
+      messages: modifiedMessages,
+      ...(validatedTools && { tools: validatedTools }),
     });
 
     console.log('Non-streaming result - toolCalls:', result.toolCalls);
